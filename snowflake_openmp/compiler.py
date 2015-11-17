@@ -1,5 +1,5 @@
 from __future__ import division, print_function
-from ctree.c.nodes import MultiNode, Pragma
+from ctree.c.nodes import MultiNode, Pragma, FunctionDecl
 import operator
 from ctree.cpp.nodes import CppInclude
 from snowflake.analytics import validate_stencil, AnalysisError
@@ -16,9 +16,10 @@ class OpenMPCompiler(CCompiler):
         def visit_IterationSpace(self, node):
             result = super(OpenMPCompiler.IterationSpaceExpander, self).visit_IterationSpace(node)
             result = MultiNode([
-                Pragma(pragma="omp for nowait", body=[child]) for child in result.body
+                Pragma(pragma="omp for", body=[child]) for child in result.body
             ])
-            return Pragma(pragma="omp parallel", body=[result], braces=True)
+            return result
+            # return Pragma(pragma="omp parallel", body=[result], braces=True)
 
     class LazySpecializedKernel(CCompiler.LazySpecializedKernel):
         def __init__(self, py_ast=None, names=None, target_names=('out',), index_name='index',
@@ -32,6 +33,8 @@ class OpenMPCompiler(CCompiler):
             result = super(OpenMPCompiler.LazySpecializedKernel, self).transform(tree, program_config)
             result.config_target = 'omp'
             result.body.insert(0, CppInclude("omp.h"))
+            node = result.find(FunctionDecl)
+            node.defn = [Pragma("omp parallel", body=node.defn, braces=True)]
             return result
 
     def _compile(self, node, index_name, **kwargs):
