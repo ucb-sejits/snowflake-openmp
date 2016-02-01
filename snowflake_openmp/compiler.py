@@ -2,8 +2,10 @@ from __future__ import division, print_function
 from ctree.c.nodes import MultiNode, Pragma, FunctionDecl
 import operator
 from ctree.cpp.nodes import CppInclude
+from ctree.frontend import dump
 from snowflake.analytics import validate_stencil, AnalysisError
 from snowflake.compiler_nodes import Space
+from snowflake.compiler_utils import calculate_ND_volume
 from snowflake.stencil_compiler import CCompiler
 import itertools
 import numpy as np
@@ -13,10 +15,17 @@ __author__ = 'nzhang-dev'
 
 class OpenMPCompiler(CCompiler):
     class IterationSpaceExpander(CCompiler.IterationSpaceExpander):
+
+        threshold = 64*64*64
+
         def visit_IterationSpace(self, node):
+            volume = calculate_ND_volume(node.space)
             result = super(OpenMPCompiler.IterationSpaceExpander, self).visit_IterationSpace(node)
             result = MultiNode([
-                Pragma(pragma="omp for", body=[child]) for child in result.body
+                Pragma(pragma="omp for", body=[child]) if volume[1] > self.threshold else
+                # Pragma(pragma="omp single", braces=True, body=[Pragma(pragma="omp task", braces=True, body=[child])])
+                Pragma(pragma="omp single", braces=True, body=[child])
+                for child in result.body
             ])
             return result
             # return Pragma(pragma="omp parallel", body=[result], braces=True)
@@ -35,6 +44,8 @@ class OpenMPCompiler(CCompiler):
             result.body.insert(0, CppInclude("omp.h"))
             node = result.find(FunctionDecl)
             node.defn = [Pragma("omp parallel", body=node.defn, braces=True)]
+            # print(dump(result))
+            # print(result)
             return result
 
     def _compile(self, node, index_name, **kwargs):
