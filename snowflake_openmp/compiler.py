@@ -55,6 +55,27 @@ class OpenMPCompiler(CCompiler):
                     node.body[ind] = Pragma("omp for", body=[child])
             return node
 
+    class MakeSingle(ast.NodeTransformer):
+        def visit_MultiNode(self, node):
+            new_body = []
+            group = []
+            for child in node.body:
+                if isinstance(child, Pragma):
+                    group.append(child)
+                else:
+                    if group:
+                        new_body.append(
+                            Pragma("omp master", body=group, braces=True)
+                        )
+                        group = []
+                    new_body.append(child)
+            if group:
+                new_body.append(
+                    Pragma("omp master", body=group, braces=True)
+                )
+            node.body = new_body
+            return node
+
 
 
 
@@ -72,6 +93,7 @@ class OpenMPCompiler(CCompiler):
             result.body.insert(0, CppInclude("omp.h"))
             node = result.find(FunctionDecl)
             node.defn = [Pragma("omp parallel", body=node.defn, braces=True)]
+            result = self.parent_cls.MakeSingle().visit(result)
             return self.parent_cls.ParallelForTasks().visit(result)
 
     def _compile(self, node, index_name, **kwargs):
