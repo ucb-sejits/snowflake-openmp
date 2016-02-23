@@ -129,7 +129,7 @@ class OpenMPCompiler(CCompiler):
 
             node = result.find(FunctionDecl)
             node.defn = [Pragma("omp parallel", body=node.defn, braces=True)]
-            result = self.parent_cls.MakeSingle(dependency_graph, self.original).visit(result)
+            result = self.parent_cls.MakeSingle(dependency_graph, self.original.body).visit(result)
             return result
 
     # def _compile(self, node, index_name, **kwargs):
