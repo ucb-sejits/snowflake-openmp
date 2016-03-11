@@ -1,7 +1,8 @@
 from __future__ import division, print_function
 import ast
 import copy
-from ctree.c.nodes import MultiNode, Pragma, FunctionDecl, For
+from ctypes import c_long
+from ctree.c.nodes import MultiNode, Pragma, FunctionDecl, For, Assign, SymbolRef
 import operator
 from ctree.cpp.nodes import CppInclude
 from ctree.frontend import dump
@@ -56,54 +57,94 @@ class OpenMPCompiler(CCompiler):
             return node
 
     class MakeSingle(ast.NodeTransformer):
-        def __init__(self, dependency_graph, stencils):
+        def __init__(self, dependency_graph, stencil_ids, ndim):
             self.graph = dependency_graph  # graph[a][b] = does a depend on b?
-            self.stencils = stencils  # a list of the original stencils.
+            self.stencil_ids = stencil_ids  # a list of the original stencils.
+            self.ndim = ndim
+
         def visit_Pragma(self, node): # They'll be inside an omp parallel pragma
             if node.pragma != "omp parallel":
                 return node
             new_body = []
             group = []
             dependency_ids = []
-            for stencil, child in zip(self.stencils, node.body):
-                id = hash(stencil)
+            # def stop():
+            #     return Pragma("omp taskwait", []), Pragma("omp barrier", [])
+            for stencil_id, child in zip(self.stencil_ids, node.body):
                 # Cases:
                 # task -> has dependency
                 # task -> no dependency
                 # parallel task region -> has dependency
                 # parallel task region -> no dependency
-                has_dependency = any(self.graph[id][dep] for dep in dependency_ids)
+                has_dependency = any(self.graph[stencil_id][dep] for dep in dependency_ids)
+                # print(dependency_ids, stencil_id)
+                # print(has_dependency)
                 if isinstance(child, Pragma) and child.pragma == "omp task":
                     # task
                     if has_dependency:
                         # if we're in a task and we have a dependency
                         group.append(Pragma("omp taskwait", []))
-                        dependency_ids = [id] # reset the dependencies
-                    else:
-                        # in a task without a dependency
-                        dependency_ids.append(id)
-                        group.append(child)
+
+                        dependency_ids = []  # reset the dependencies
+                    dependency_ids.append(stencil_id)
+                    group.append(child)
 
                 else:
                     if group:
-                        new_body.append( # offload the previous group if there is one
-                            Pragma("omp single nowait", body=group, braces=True)
+                        new_body.append(  # offload the previous group if there is one
+                            Pragma("omp single", body=group, braces=True)
                         )
+                        if has_dependency:
+                            new_body.append(Pragma("omp barrier", []))
+                            new_body.append(Pragma("omp taskwait", []))
+                            dependency_ids = []
                         group = []
+                        dependency_ids.append(stencil_id)
+                        new_body.append(child)
                     # parallel task region
-                    if has_dependency:
-                        new_body.append(Pragma("omp taskwait", []))
-                        dependency_ids = [id]
                     else:
-                        dependency_ids.append(id)
-                    new_body.append(child)
+                        if has_dependency:
+                            new_body.append(Pragma("omp barrier", []))
+                            new_body.append(Pragma("omp taskwait", []))
+                            dependency_ids = []
+                        dependency_ids.append(stencil_id)
+                        new_body.append(child)
             if group:  # Might have remaining single group waiting. Will not have dependencies.
                 new_body.append(
-                    Pragma("omp single nowait", body=group, braces=True)
+                    Pragma("omp single", body=group, braces=True)
                 )
             node.body = new_body
             return node
 
+    class Privatize(ast.NodeTransformer):
+        def __init__(self):
+            self.stack = []
+
+        def visit_For(self, node):
+            """
+            We match the pattern
+            for a
+                for b
+                    etc...
+                        #pragma omp task
+
+            and replace it with
+            for a
+                for b
+                    etc...
+                        #pragma omp task firstprivate(a, b, etc...)
+            """
+            self.stack.append(
+                node.init.left.name # node.init is an assign node, assign.left is a symbolref.
+            )
+            self.generic_visit(node)
+            self.stack.pop()
+            return node
+
+        def visit_Pragma(self, node):
+            if node.pragma == "omp task" and self.stack:
+                node.pragma += " firstprivate({})".format(", ".join(self.stack))
+            return self.generic_visit(node)
 
 
 
@@ -118,8 +159,10 @@ class OpenMPCompiler(CCompiler):
         def transform(self, tree, program_config):
             subconfig, tuning_config = program_config
             name_shape_map = {name: arg.shape for name, arg in subconfig.items()}
+            ndim = len(name_shape_map.values()[0])
             print("analyzing", len(self.original.body))
             dependency_graph = create_dependency_graph(self.original, name_shape_map)
+            stencil_ids = [hash(s) for s in self.original.body]
             print("done analyzing")
             result = super(OpenMPCompiler.LazySpecializedKernel, self).transform(tree, program_config)
             result.config_target = 'omp'
@@ -129,7 +172,9 @@ class OpenMPCompiler(CCompiler):
 
             node = result.find(FunctionDecl)
             node.defn = [Pragma("omp parallel", body=node.defn, braces=True)]
-            result = self.parent_cls.MakeSingle(dependency_graph, self.original.body).visit(result)
+            result = self.parent_cls.MakeSingle(dependency_graph, stencil_ids, ndim).visit(result)
+            result = self.parent_cls.Privatize().visit(result)
+
             return result
 
     # def _compile(self, node, index_name, **kwargs):
