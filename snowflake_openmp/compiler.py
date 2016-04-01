@@ -176,8 +176,3 @@ class OpenMPCompiler(CCompiler):
             result = self.parent_cls.Privatize().visit(result)
 
             return result
-
-    # def _compile(self, node, index_name, **kwargs):
-    #     # if not all(validate_stencil(stencil) for stencil in node.body):
-    #     #     raise AnalysisError("Analysis found Loop-Carry Dependency in stencil. Cannot proceed")
-    #     return super(OpenMPCompiler, self)._compile(node, index_name, **kwargs)
