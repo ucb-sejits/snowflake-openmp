@@ -13,12 +13,6 @@ from snowflake.stencil_compiler import CCompiler
 import itertools
 import numpy as np
 from snowflake.vector import Vector
-
-import os
-
-os.environ["GOMP_CPU_AFFINITY"] = "0-7"
-os.environ["OMP_NUM_THREADS"] = "8"
-
 __author__ = 'nzhang-dev'
 
 class OpenMPCompiler(CCompiler):
